@@ -37,7 +37,7 @@ async def ban_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Only monitor changes for users being tracked
     username = new_status.user.username
-    if username not in monitored_users[chat_id]:
+    if not username or username not in monitored_users[chat_id]:
         return
 
     if old_status.status not in ["kicked", "restricted"] and new_status.status in ["kicked", "restricted"]:
@@ -47,14 +47,17 @@ async def ban_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ban_time = "Indefinite"
 
         if until_date:
-            ban_duration = until_date - datetime.now()
-            hours, remainder = divmod(ban_duration.total_seconds(), 3600)
-            minutes = remainder // 60
-            ban_time = f"{int(hours)} Hours and {int(minutes)} Minutes"
+            ban_duration = until_date - datetime.utcnow()
+            if ban_duration.total_seconds() > 0:
+                hours, remainder = divmod(ban_duration.total_seconds(), 3600)
+                minutes = remainder // 60
+                ban_time = f"{int(hours)} Hours and {int(minutes)} Minutes"
+            else:
+                ban_time = "Expired"
 
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"Banned @{username}.\nTook {ban_time}."
+            text=f"Banned @{username}.\nBan Duration: {ban_time}."
         )
 
 def main():
@@ -67,6 +70,9 @@ def main():
     # Add Command and ChatMember handlers
     application.add_handler(CommandHandler("banwatch", banwatch))
     application.add_handler(ChatMemberHandler(ban_monitor, ChatMemberHandler.CHAT_MEMBER))
+
+    # Print a message indicating the bot has started
+    print("Bot is starting and now running...")
 
     # Start polling
     application.run_polling()
