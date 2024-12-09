@@ -1,81 +1,82 @@
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ChatMemberHandler, ContextTypes
+import time
 from datetime import datetime
+from telegram import Update
+from telegram.ext import Updater, CommandHandler, CallbackContext, JobQueue
+import instaloader
 
-# Track users to monitor for bans
-monitored_users = {}
+# Global dictionary to store monitoring information
+monitoring_accounts = {}
 
-async def banwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Starts monitoring bans for a specific user."""
-    if len(context.args) == 0:
-        await update.message.reply_text("Please specify a username to monitor (e.g., /banwatch <username>).")
+# Function to check if an Instagram account is accessible
+def is_account_active(username):
+    loader = instaloader.Instaloader()
+    try:
+        instaloader.Profile.from_username(loader.context, username)
+        return True
+    except Exception:
+        return False
+
+# Command to start monitoring an Instagram account
+def banwatch(update: Update, context: CallbackContext):
+    if not context.args:
+        update.message.reply_text("Usage: /banwatch <username>")
         return
 
-    username = context.args[0].lstrip('@')  # Remove @ if included
-    chat_id = update.effective_chat.id
+    username = context.args[0]
+    user_id = update.message.chat_id
 
-    if chat_id not in monitored_users:
-        monitored_users[chat_id] = []
-
-    # Check if already monitoring the user
-    if username in monitored_users[chat_id]:
-        await update.message.reply_text(f"Already monitoring @{username}.")
+    if username in monitoring_accounts:
+        update.message.reply_text(f"Already monitoring @{username}.")
         return
 
-    monitored_users[chat_id].append(username)
-    await update.message.reply_text(f"Started monitoring @{username} for bans.")
+    # Add the username to the monitoring list
+    monitoring_accounts[username] = {
+        "start_time": datetime.now(),
+        "user_id": user_id,
+    }
 
-async def ban_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles ban events for monitored users."""
-    chat_id = update.effective_chat.id
-    if chat_id not in monitored_users:
-        return  # No monitoring in this chat
+    update.message.reply_text(f"Started monitoring @{username} for bans.")
 
-    status_change = update.chat_member
-    old_status = status_change.old_chat_member
-    new_status = status_change.new_chat_member
+# Background job to check account status
+def check_ban_status(context: CallbackContext):
+    to_remove = []
 
-    # Only monitor changes for users being tracked
-    username = new_status.user.username
-    if not username or username not in monitored_users[chat_id]:
-        return
+    for username, info in monitoring_accounts.items():
+        if not is_account_active(username):
+            start_time = info["start_time"]
+            elapsed_time = datetime.now() - start_time
+            hours, remainder = divmod(elapsed_time.seconds, 3600)
+            minutes, _ = divmod(remainder, 60)
 
-    if old_status.status not in ["kicked", "restricted"] and new_status.status in ["kicked", "restricted"]:
-        # A ban or restriction occurred
-        user = new_status.user
-        until_date = new_status.until_date
-        ban_time = "Indefinite"
+            context.bot.send_message(
+                chat_id=info["user_id"],
+                text=f"Banned @{username}. Took {hours} Hours and {minutes} Minutes."
+            )
+            to_remove.append(username)
 
-        if until_date:
-            ban_duration = until_date - datetime.utcnow()
-            if ban_duration.total_seconds() > 0:
-                hours, remainder = divmod(ban_duration.total_seconds(), 3600)
-                minutes = remainder // 60
-                ban_time = f"{int(hours)} Hours and {int(minutes)} Minutes"
-            else:
-                ban_time = "Expired"
+    # Remove banned accounts from monitoring list
+    for username in to_remove:
+        del monitoring_accounts[username]
 
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"Banned @{username}.\nBan Duration: {ban_time}."
-        )
-
+# Main function to start the bot
 def main():
-    # Your bot token here
-    TOKEN = "8073847069:AAH8vAiqWQAXMwKZoclT0FuSloqEeSNtbyo"
+    TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+    updater = Updater(TOKEN, use_context=True)
+    dispatcher = updater.dispatcher
 
-    # Create Application
-    application = Application.builder().token(TOKEN).build()
+    # Add command handlers
+    dispatcher.add_handler(CommandHandler("banwatch", banwatch))
 
-    # Add Command and ChatMember handlers
-    application.add_handler(CommandHandler("banwatch", banwatch))
-    application.add_handler(ChatMemberHandler(ban_monitor, ChatMemberHandler.CHAT_MEMBER))
+    # Set up job queue for periodic checks
+    job_queue = updater.job_queue
+    job_queue.run_repeating(check_ban_status, interval=60)  # Check every 1 minute
 
-    # Print a message indicating the bot has started
+     # Print a message indicating the bot has started
     print("Bot is starting and now running...")
 
-    # Start polling
-    application.run_polling()
+    # Start the bot
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
