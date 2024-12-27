@@ -1,2 +1,3 @@
-python-telegram-bot==13.15
-instaloader==4.10.1
+python-telegram-bot==20.3  # Replace with the latest compatible version
+requests==2.31.0           # HTTP library for checking username availability
+asyncio                    # Asynchronous framework (built-in for Python 3.7+)
