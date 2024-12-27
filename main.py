@@ -1,82 +1,109 @@
 import time
-from datetime import datetime
+import asyncio
+import requests
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext, JobQueue
-import instaloader
+from telegram.ext import Application, CommandHandler, CallbackContext
+from telegram.error import TimedOut
 
-# Global dictionary to store monitoring information
-monitoring_accounts = {}
+API_TOKEN = '8073847069:AAH8vAiqWQAXMwKZoclT0FuSloqEeSNtbyo'  # Replace with your bot API token
+MONITORING_USERNAMES = {}  # Dictionary to track usernames being monitored
 
-# Function to check if an Instagram account is accessible
-def is_account_active(username):
-    loader = instaloader.Instaloader()
+# Function to check if the username exists or is banned
+def check_username(username: str) -> bool:
+    url = f'https://fragment.com/username/{username}'  # Use Fragment URL for validation
     try:
-        instaloader.Profile.from_username(loader.context, username)
-        return True
-    except Exception:
+        response = requests.get(url)
+        if response.status_code == 200 and "Unavailable" not in response.text:
+            return True  # Username exists and is available
+        return False  # Username is unavailable (banned or not for sale)
+    except Exception as e:
+        print(f"Error while checking username: {e}")
         return False
 
-# Command to start monitoring an Instagram account
-def banwatch(update: Update, context: CallbackContext):
-    if not context.args:
-        update.message.reply_text("Usage: /banwatch <username>")
+# Retry function for sending messages
+async def send_message_with_retry(update, message):
+    for _ in range(3):  # Retry up to 3 times
+        try:
+            await update.message.reply_text(message)
+            return  # If successful, exit the function
+        except TimedOut:
+            print("Timeout occurred, retrying...")
+            time.sleep(5)  # Wait for 5 seconds before retrying
+
+    # After 3 retries, log the failure
+    print(f"Failed to send message: {message}")
+
+# Command to start monitoring a username
+async def banwatch(update: Update, context: CallbackContext):
+    """Start monitoring a username."""
+    if len(context.args) != 1:
+        await send_message_with_retry(update, "Please provide exactly one username to monitor (e.g., /banwatch target@).")
         return
+    
+    username = context.args[0].lstrip('@')  # Remove @ if present
+    fragment_url = f"https://fragment.com/username/{username}"  # Construct the Fragment URL
+    start_time = time.time()
+    
+    # Check if the username exists or is banned
+    username_exists = check_username(username)
+    if not username_exists:
+        await send_message_with_retry(update, f"The username @{username} is banned")
+        return  # Stop execution if the username is unavailable
+    
+    # Store the username and start time for tracking
+    MONITORING_USERNAMES[username] = start_time
+    await send_message_with_retry(
+        update, f"Started monitoring @{username} for bans..."
+    )
 
-    username = context.args[0]
-    user_id = update.message.chat_id
+    # Monitor the username's status
+    await monitor_username(update, context, username, start_time)
 
-    if username in monitoring_accounts:
-        update.message.reply_text(f"Already monitoring @{username}.")
-        return
-
-    # Add the username to the monitoring list
-    monitoring_accounts[username] = {
-        "start_time": datetime.now(),
-        "user_id": user_id,
-    }
-
-    update.message.reply_text(f"Started monitoring @{username} for bans.")
-
-# Background job to check account status
-def check_ban_status(context: CallbackContext):
-    to_remove = []
-
-    for username, info in monitoring_accounts.items():
-        if not is_account_active(username):
-            start_time = info["start_time"]
-            elapsed_time = datetime.now() - start_time
-            hours, remainder = divmod(elapsed_time.seconds, 3600)
-            minutes, _ = divmod(remainder, 60)
-
-            context.bot.send_message(
-                chat_id=info["user_id"],
-                text=f"Banned @{username}. Took {hours} Hours and {minutes} Minutes."
+# Monitor the username's status
+async def monitor_username(update: Update, context: CallbackContext, username: str, start_time: float):
+    """Monitor the username and track time taken for account ban or deletion."""
+    fragment_url = f"https://fragment.com/username/{username}"  # Construct the Fragment URL
+    
+    while True:
+        # Check if the username is still valid on Fragment
+        username_exists = check_username(username)
+        
+        # Calculate elapsed time in hours and minutes
+        elapsed_time = time.time() - start_time
+        hours, remainder = divmod(int(elapsed_time), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        if not username_exists:
+            # If the username is banned or deleted
+            await send_message_with_retry(
+                update, f"The username @{username} is now banned. Monitoring stopped.\nTime monitored: {hours} hours and {minutes} minutes."
             )
-            to_remove.append(username)
+            break  # Stop monitoring after finding banned account
+        
+        # Check the username every 60 seconds
+        await asyncio.sleep(60)
 
-    # Remove banned accounts from monitoring list
-    for username in to_remove:
-        del monitoring_accounts[username]
+# Command to start the bot and send the /start message
+async def start(update: Update, context: CallbackContext):
+    """Send a welcome message when the bot starts."""
+    welcome_message = (
+        "Welcome! I'm here to monitor if a Telegram username gets banned. "
+        "Use the command /banwatch followed by a username to start monitoring."
+    )
+    await send_message_with_retry(update, welcome_message)
 
-# Main function to start the bot
+# Start the bot
 def main():
-    TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-    updater = Updater(TOKEN, use_context=True)
-    dispatcher = updater.dispatcher
+    """Start the Telegram bot."""
+    application = Application.builder().token(API_TOKEN).build()
 
-    # Add command handlers
-    dispatcher.add_handler(CommandHandler("banwatch", banwatch))
+    # Handlers for commands
+    application.add_handler(CommandHandler("start", start))  # /start command
+    application.add_handler(CommandHandler("banwatch", banwatch))  # /banwatch command
 
-    # Set up job queue for periodic checks
-    job_queue = updater.job_queue
-    job_queue.run_repeating(check_ban_status, interval=60)  # Check every 1 minute
+    # Start polling
+    print("Bot is running...")
+    application.run_polling()
 
-     # Print a message indicating the bot has started
-    print("Bot is starting and now running...")
-
-    # Start the bot
-    updater.start_polling()
-    updater.idle()
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
